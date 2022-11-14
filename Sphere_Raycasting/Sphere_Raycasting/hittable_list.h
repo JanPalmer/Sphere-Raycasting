@@ -1,4 +1,5 @@
-#pragma once
+#ifndef HITTABLE_LIST_H
+#define HITTABLE_LIST_H
 
 #include "hittable.h"
 
@@ -22,7 +23,7 @@ public:
 	std::vector<shared_ptr<hittable>> objects;
 };
 
-bool hittable_list::hit(const ray& r, float t_min, float t_max, hit_record& rec) const {
+inline bool hittable_list::hit(const ray& r, float t_min, float t_max, hit_record& rec) const {
 	hit_record temp_rec;
 	bool hit_anything = false;
 	auto closest_so_far = t_max;
@@ -37,3 +38,4 @@ bool hittable_list::hit(const ray& r, float t_min, float t_max, hit_record& rec)
 
 	return hit_anything;
 }
+#endif

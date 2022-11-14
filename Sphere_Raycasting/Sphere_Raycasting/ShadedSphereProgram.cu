@@ -1,11 +1,8 @@
 ﻿
 #include <stdio.h>
 
-
 #include "Dependencies/GL/glew.h"
 #include "Dependencies/GL/freeglut.h"
-
-
 
 #include "cuda_runtime.h"
 #include "device_launch_parameters.h"
@@ -52,22 +49,30 @@ uchar4 colors;
 int numSMs = 0;   // number of multiprocessors
 int version = 1;  // Compute Capability
 
-float framesPerSecond;
+hittable_list sphere_list;
+lights_list lights;
+camera viewer;
+
+vec3 moveLEFT = vec3(1, 0, 0);
+vec3 moveBACK = vec3(0, 0, 1);
+bool cameraRotationMode = false;
+int ox, oy;
+float angle_x = 0, angle_y = 0;
+float start_angle_x, start_angle_y;
 
 static int DisplaySize() {
     return imageW * imageH;
 }
 
-int frameIndex = 0;
-
 // Timer ID
 StopWatchInterface* hTimer = NULL;
-// Auto-Verification Code
-const int frameCheckNumber = 60;
-int fpsCount = 0;   // FPS count for averaging
-int fpsLimit = 15;  // FPS limit for sampling
-unsigned int frameCount = 0;
-unsigned int g_TotalErrors = 0;
+StopWatchInterface* globalTimer = NULL;
+
+int frameCount, fpsCount, fpsLimit = 15;
+float deltaTime = 0;
+float lastFrameTime = 0;
+float currentFrameTime = 0;
+float framesPerSecond;
 
 #ifndef MAX
 #define MAX(a, b) ((a > b) ? a : b)
@@ -77,13 +82,12 @@ unsigned int g_TotalErrors = 0;
 void computeFPS() {
     frameCount++;
     fpsCount++;
-
     if (fpsCount == fpsLimit) {
         char fps[256];
         float ifps = 1.f / (sdkGetAverageTimerValue(&hTimer) / 1000.f);
         framesPerSecond = ifps;
-        sprintf(fps, "<CUDA %s Set> %3.1f fps",
-            "Mandelbrot", ifps);
+        sprintf(fps, "<CUDA %s Set> %3.1f fps, %5.8f render time",
+            "Sphere Shading", ifps, deltaTime * 0.001f);
         glutSetWindowTitle(fps);
         fpsCount = 0;
 
@@ -173,7 +177,93 @@ void initOpenGLBuffers(int w, int h) {
     gl_Shader = compileASMShader(GL_FRAGMENT_PROGRAM_ARB, shader_code);
 }
 
-void reshape(int w, int h) {
+static void keyboard(unsigned char key, int /*x*/, int /*y*/) {
+	switch (key) {
+	case 'w':
+		viewer.move(-deltaTime * viewer.speed * moveBACK);
+		break;
+	case 's':
+		viewer.move(deltaTime * viewer.speed * moveBACK);
+		break;
+	case 'a':
+		viewer.move(deltaTime * viewer.speed * moveLEFT);
+		break;
+	case 'd':
+		viewer.move(-deltaTime * viewer.speed * moveLEFT);
+		break;
+	}
+
+    glutPostRedisplay();
+}
+
+void clickFunc(int button, int state, int x, int y) {
+    //if (button == GLUT_LEFT_BUTTON) {
+    //    if (state == GLUT_DOWN) {
+    //        cameraRotationMode = true;
+    //        printf("leftclick\n");
+    //    }
+    //    else {
+    //        cameraRotationMode = false;
+    //        printf("rightclick\n");
+    //    }
+    //}
+
+    if (state == GLUT_DOWN) {
+        ox = x;
+        oy = y;
+        start_angle_x = angle_x;
+        start_angle_y = angle_y;
+    }
+
+    glutPostRedisplay();
+}
+
+void motionFunc(int x, int y) {
+    
+    angle_x = start_angle_x + ((float)(x - ox) / 300.0f);
+    angle_y = start_angle_y + ((float)(y - oy) / 300.0f);
+
+    float yaw = deltaTime * viewer.speed * angle_x;
+    float pitch = deltaTime * viewer.speed * angle_y;
+
+    //if (pitch > 89.0f) {
+    //    pitch = 89.0f;
+    //}
+    //else if (pitch < -89.0f) {
+    //    pitch = -89.0f;
+    //}
+
+    //viewer.forward.
+
+    vec3 forward = viewer.forward;
+
+    vec3 newForward = vec3(
+        forward.x() - sin(yaw) * cos(pitch),
+        forward.x() - sin(pitch),
+        forward.x() - cos(yaw) * cos(pitch)
+    );
+
+    vec3 right = viewer.right;
+
+    vec3 newRight = vec3(
+        right.x() - cos(yaw),
+        right.y(),
+        right.z() + sin(yaw)
+    );
+
+    viewer.setForward(unit_vector(newForward));
+    viewer.setRight(unit_vector(newRight));
+    viewer.setUp(unit_vector(cross(newForward, newRight)));
+
+    //printf("new UP %3.1f, %3.1f, %3.1f\n", viewer.front.x(), viewer.front.y(), viewer.front.z());
+
+    ox = x;
+    oy = y;
+
+    glutPostRedisplay();
+}
+
+static void reshape(int w, int h) {
     glViewport(0, 0, w, h);
 
     glMatrixMode(GL_MODELVIEW);
@@ -193,7 +283,7 @@ void reshape(int w, int h) {
     glutPostRedisplay();
 }
 
-void cleanup() {
+static void cleanup() {
     if (h_Src) {
         free(h_Src);
         h_Src = 0;
@@ -201,6 +291,9 @@ void cleanup() {
 
     sdkStopTimer(&hTimer);
     sdkDeleteTimer(&hTimer);
+
+    sdkStopTimer(&globalTimer);
+    sdkDeleteTimer(&globalTimer);
 
     // DEPRECATED: checkCudaErrors(cudaGLUnregisterBufferObject(gl_PBO));
     checkCudaErrors(cudaGraphicsUnregisterResource(cuda_pbo_resource));
@@ -217,38 +310,30 @@ void renderImage(bool runcpu) {
     if (runcpu) {
         //int startPass = pass;
         float xs, ys;
-        sdkResetTimer(&hTimer);
+        xs = ys = 0;
+		sdkResetTimer(&hTimer);
 
-        //if (bUseOpenGL) {
-        //    // DEPRECATED: checkCudaErrors(cudaGLMapBufferObject((void**)&d_dst,
-        //    // gl_PBO));
-            checkCudaErrors(cudaGraphicsMapResources(1, &cuda_pbo_resource, 0));
-            size_t num_bytes;
-            checkCudaErrors(cudaGraphicsResourceGetMappedPointer(
-                (void**)&d_dst, &num_bytes, cuda_pbo_resource));
-        //}
+		checkCudaErrors(cudaGraphicsMapResources(1, &cuda_pbo_resource, 0));
+		size_t num_bytes;
+		checkCudaErrors(cudaGraphicsResourceGetMappedPointer(
+			(void**)&d_dst, &num_bytes, cuda_pbo_resource));
 
-        // Get the pixel scale and offset
-        double s = scale / (double)imageW;
-        double x = (xs - (double)imageW * 0.5f) * s + xOff;
-        double y = (ys - (double)imageH * 0.5f) * s + yOff;
+		// Get the pixel scale and offset
+		double s = scale / (double)imageW;
+		double x = (xs - (double)imageW * 0.5f) * s + xOff;
+		double y = (ys - (double)imageH * 0.5f) * s + yOff;
 
         // Run the mandelbrot generator
-        renderImageCPU(h_Src, imageW, imageH);
+        renderImageCPU(h_Src, imageW, imageH, sphere_list, lights, viewer);
         
         // Use the adaptive sampling version when animating.
 
         checkCudaErrors(cudaMemcpy(d_dst, h_Src, imageW * imageH * sizeof(uchar4),
             cudaMemcpyHostToDevice));
 
-        //if (bUseOpenGL) {
-        //    // DEPRECATED: checkCudaErrors(cudaGLUnmapBufferObject(gl_PBO));
-            checkCudaErrors(cudaGraphicsUnmapResources(1, &cuda_pbo_resource, 0));
-        //}
+        checkCudaErrors(cudaGraphicsUnmapResources(1, &cuda_pbo_resource, 0));
 
-#if RUN_TIMING
-        printf("CPU = %5.8f\n", 0.001f * sdkGetTimerValue(&hTimer));
-#endif
+        //printf("CPU = %5.8f\n", 0.001f * sdkGetTimerValue(&hTimer));
     }
 }
 
@@ -288,7 +373,16 @@ static void display(void)
     sdkStopTimer(&hTimer);
     glutSwapBuffers();
 
-    printf("Width: % d, Height: %d, FPS: %3.1f\n", imageW, imageH, framesPerSecond);
+    lastFrameTime = currentFrameTime;
+    currentFrameTime = sdkGetTimerValue(&globalTimer);
+    deltaTime = currentFrameTime - lastFrameTime;
+
+    //printf("Width: % d, Height: %d, FPS: %3.1f\n", imageW, imageH, framesPerSecond);
+    printf("pos: %3.1f, %3.1f, %3.1f, right: %3.1f, %3.1f, %3.1f, up: %3.1f, %3.1f, %3.1f \n", 
+        viewer.getPos().x(), viewer.getPos().y(), viewer.getPos().z(),
+        viewer.right.x(), viewer.right.y(), viewer.right.z(),
+        viewer.up.x(), viewer.up.y(), viewer.up.z());
+
 
     computeFPS();
 }
@@ -315,10 +409,11 @@ void initGL(int* argc, char** argv) {
     glutCreateWindow(argv[0]);
 
     glutDisplayFunc(display);
-    //glutKeyboardFunc(keyboard);
-    //glutMouseFunc(clickFunc);
-    //glutMotionFunc(motionFunc);
+    glutKeyboardFunc(keyboard);
+    glutMouseFunc(clickFunc);
+    glutMotionFunc(motionFunc);
     glutReshapeFunc(reshape);
+    glutCloseFunc(cleanup);
     glutTimerFunc(REFRESH_DELAY, timerEvent, 0);
     //initMenus();
 
@@ -360,23 +455,32 @@ void initData(int argc, char** argv) {
         scale = getCmdLineArgumentFloat(argc, (const char**)argv, "xOff");
     }
 
-    colors.w = 0;
-    colors.x = 3;
-    colors.y = 5;
-    colors.z = 7;
     printf("Data initialization done.\n");
 }
 
+void initScene() {
+    sphere_list.add(make_shared<sphere>(point3(0, 0, -1), 0.5f, color(1, 1, 1)));
+    sphere_list.add(make_shared<sphere>(point3(0, -100.5, -1), 100, color(1, 1, 1)));
+    //lights.add(make_shared<light>(point3(-1, 0, 0), color(0.0f, 0.0f, 2.0f)));
+    lights.add(make_shared<light>(point3(0, 1, 0), color(2.0f, 1.2f, 0.0f)));
+    //lights.add(make_shared<light>(point3(0, 0, -1), color(0.0f, 1.5f, 0.0f)));
+
+    viewer = camera(point3(0, 0, 0), vec3(1, 0, 0), vec3(0, 0, 1));
+}
 
 int main(int argc, char* argv[])
 {
     initData(argc, argv);
+    initScene();
 
     initGL(&argc, argv);
     initOpenGLBuffers(imageW, imageH);
 
     sdkCreateTimer(&hTimer);
     sdkStartTimer(&hTimer);
+
+    sdkCreateTimer(&globalTimer);
+    sdkStartTimer(&globalTimer);
 
     glutMainLoop();
 

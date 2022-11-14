@@ -1,9 +1,13 @@
 #pragma once
 #include <vector_types.h>
-#include "vec3.h"
-#include "color.h"
-#include "ray.h"
 
-float hit_sphere(const point3& center, float radius, const ray& r);
-color ray_color(const ray& r);
-void renderImageCPU(uchar4* dst, int w, int h);
+#include "rtconstants.h"
+#include "color.h"
+#include "hittable_list.h"
+#include "sphere.h"
+#include "lights.h"
+#include "camera.h"
+
+color shade_point(hit_record& rec, const hittable& world, const lights_list& lights, const camera& cam);
+color ray_color(const ray& r, const hittable& world, const lights_list& lights, const camera& cam);
+void renderImageCPU(uchar4* dst, int w, int h, const hittable& world, const lights_list& lights, const camera& cam);

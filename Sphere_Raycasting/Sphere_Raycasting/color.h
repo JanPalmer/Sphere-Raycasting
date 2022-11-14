@@ -1,4 +1,6 @@
-#pragma once
+#ifndef COLOR_H
+#define COLOR_H
+
 #include "vec3.h"
 #include <iostream>
 #include <vector_types.h>
@@ -14,9 +16,14 @@ static void write_color(std::ostream& out, color pixel_color) {
 
 static uchar3 ConvertColorToUchar3(const color& col) {
     unsigned char r, g, b;
-    r = static_cast<int>(255.999 * col.x());
-    g = static_cast<int>(255.999 * col.y());
-    b = static_cast<int>(255.999 * col.z());
+    float rf, gf, bf;
+    rf = 255.999 * col.x();
+    gf = 255.999 * col.y();
+    bf = 255.999 * col.z();
+
+    r = static_cast<int>((rf > 255) ? 255 : rf);
+    g = static_cast<int>((gf > 255) ? 255 : gf);
+    b = static_cast<int>((bf > 255) ? 255 : bf);
     uchar3 uc;
     uc.x = r; uc.y = g; uc.z = b;
     return uc;
@@ -30,9 +37,9 @@ static void setColor(uchar4& dst, int red, int green, int blue) {
         return;
     }
 
-    dst.x = red;
-    dst.y = green;
-    dst.z = blue;
+    dst.x = (red > 255) ? 255 : red;
+    dst.y = (green > 255) ? 255 : green;
+    dst.z = (blue > 255) ? 255 : blue;
 }
 
 static void setColor(uchar4& dst, color& col) {
@@ -48,4 +55,10 @@ static void setColor(uchar4& dst, color& col) {
     dst.x = color.x;
     dst.y = color.y;
     dst.z = color.z;
+
+    //dst.x = (color.x > 255) ? 255 : color.x;
+    //dst.y = (color.y > 255) ? 255 : color.y;
+    //dst.z = (color.z > 255) ? 255 : color.z;
 }
+
+#endif

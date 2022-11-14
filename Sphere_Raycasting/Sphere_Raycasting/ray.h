@@ -1,4 +1,6 @@
-#pragma once
+#ifndef RAY_H
+#define RAY_H
+
 #include "vec3.h"
 
 class ray {
@@ -19,3 +21,5 @@ public:
 	point3 orig;
 	vec3 dir;
 };
+
+#endif
