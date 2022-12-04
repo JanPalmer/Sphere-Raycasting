@@ -86,22 +86,19 @@
     </CudaCompile>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <CudaCompile Include="ShadedSphereProgram.cu" />
+    <CudaCompile Include="SphereShading.cu" />
+    <CudaCompile Include="SphereShadingMain.cu" />
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="SphereShadingCPU.cpp" />
-  </ItemGroup>
-  <ItemGroup>
-    <ClInclude Include="color.h" />
-    <ClInclude Include="camera.h" />
-    <ClInclude Include="lights.h" />
-    <ClInclude Include="rtconstants.h" />
-    <ClInclude Include="hittable_list.h" />
-    <ClInclude Include="sphere.h" />
-    <ClInclude Include="hittable.h" />
-    <ClInclude Include="ray.h" />
-    <ClInclude Include="vec3.h" />
-    <ClInclude Include="SphereShadingCPU.h" />
+    <ClInclude Include="basic_types.cuh" />
+    <ClInclude Include="colors.cuh" />
+    <ClInclude Include="Objects\sphere.cuh" />
+    <ClInclude Include="rtconstants.cuh" />
+    <ClInclude Include="Scene\camera.cuh" />
+    <ClInclude Include="Scene\lights.cuh" />
+    <ClInclude Include="Scene\scene.cuh" />
+    <ClInclude Include="Scene\SceneCreator.h" />
+    <ClInclude Include="SphereShading.cuh" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

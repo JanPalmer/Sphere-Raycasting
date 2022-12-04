@@ -24,10 +24,9 @@ color shade_point(hit_record& rec, const hittable& world, const lights_list& lig
 		ambientsum += l.get()->color_light;
 
 		vec3 norm = unit_vector(rec.normal);
-
 		float diff = std::max(dot(norm, lightVec), 0.0f);
 		color diffuse = diff * l.get()->color_light;
-		diffusesum += diff * l.get()->color_light;
+		diffusesum += diffuse;
 
 		vec3 viewVec = unit_vector(cam.getPos() - rec.p);
 		vec3 reflectVec = unit_vector(-lightVec - 2 * dot(-lightVec, norm) * norm);
