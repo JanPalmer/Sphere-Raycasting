@@ -13,9 +13,10 @@ struct s_spheres
 	float *radius;
 	s_colors colors; // color of the object
 	float *ks, *kd, *ka; // coefficients for specular, diffuse and ambient light
+	int *m;
 };
 
-__host__ inline void setSphere(s_spheres& spheres, int i, float3 center, float radius, float3 color, float ka = 0.1f, float kd = 0.7f, float ks = 0.7f) {
+__host__ inline void setSphere(s_spheres& spheres, int i, float3 center, float radius, float3 color, float ka = 0.1f, float kd = 0.7f, float ks = 0.7f, float m = 32) {
 	if (i < 0 || i >= spheres.count) return;
 
 	spheres.center.x[i] = center.x;
@@ -28,6 +29,7 @@ __host__ inline void setSphere(s_spheres& spheres, int i, float3 center, float r
 	spheres.ka[i] = ka;
 	spheres.kd[i] = kd;
 	spheres.ks[i] = ks;
+	spheres.m[i] = m;
 }
 
 __host__ __device__ inline bool hit_checksingle(const s_ray &r, const s_spheres& spheres, int i, float t_min, float t_max, s_hit_record& rec) {

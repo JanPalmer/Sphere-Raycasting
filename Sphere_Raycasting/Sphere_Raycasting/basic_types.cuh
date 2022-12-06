@@ -6,8 +6,7 @@
 struct s_positions
 {
 	int count;
-	float* x, * y, * z;
-	float* angle;
+	float *x, *y, *z; // pointers to position arrays, one for each coordinate
 };
 
 struct s_hit_record {
@@ -27,6 +26,7 @@ __host__ __device__ inline float3 getPosition(const s_positions& positions, int 
 	return make_float3(positions.x[i], positions.y[i], positions.z[i]);
 }
 
+// Get hit_record hit point
 __host__ __device__ inline float3 point_at_t(const s_ray& ray, float t) {
 	return ray.origin + t * ray.direction;
 }

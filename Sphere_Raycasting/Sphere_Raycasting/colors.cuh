@@ -9,7 +9,7 @@
 struct s_colors
 {
     int count;
-    float *x, *y, *z;
+    float *x, *y, *z; // pointers to subcolor arrays (R, G, B), one for each coordinate
 };
 
 __host__ __device__ inline float3 getColor(const s_colors& colors, int i) {

@@ -24,6 +24,7 @@
     <ClInclude Include="Scene\SceneCreator.h">
       <Filter>Scene</Filter>
     </ClInclude>
+    <ClInclude Include="DataCopying.cuh" />
   </ItemGroup>
   <ItemGroup>
     <Filter Include="Objects">

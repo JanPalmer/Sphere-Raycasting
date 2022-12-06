@@ -92,6 +92,7 @@
   <ItemGroup>
     <ClInclude Include="basic_types.cuh" />
     <ClInclude Include="colors.cuh" />
+    <ClInclude Include="DataCopying.cuh" />
     <ClInclude Include="Objects\sphere.cuh" />
     <ClInclude Include="rtconstants.cuh" />
     <ClInclude Include="Scene\camera.cuh" />

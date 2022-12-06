@@ -12,9 +12,9 @@
 #include "Dependencies/Helpers/helper_gl.h"
 #include "Dependencies/Helpers/helper_timer.h"
 
-//#include "SphereShadingCPU.h"
 #include "SphereShading.cuh"
 #include "Scene/SceneCreator.h"
+#include "DataCopying.cuh"
 
 #define REFRESH_DELAY 10  // ms
 #define SPHERE_COUNT 1000
@@ -34,42 +34,28 @@ uchar4* d_dst = NULL;
 bool g_runcpu = false;
 
 // Original image width and height
-int imageW = 1600, imageH = 1000;
+// Application allows window resizing
+int imageW = 800, imageH = 600;
 
 // Thread count per dimension
 const int tx = 16, ty = 16;
 
-// Starting position and scale
-double xOff = -0.5;
-double yOff = 0.0;
-double scale = 3.2;
-
-// Starting stationary position and scale motion
-double xdOff = 0.0;
-double ydOff = 0.0;
-double dscale = 1.0;
-
-// Starting color multipliers and random seed
-int colorSeed = 0;
-uchar4 colors;
-
 int numSMs = 0;   // number of multiprocessors
 int version = 1;  // Compute Capability
 
-s_scene* h_scene;
-s_scene d_scene_allocationhelper;
-s_scene* d_scene;
+// Scenes used for holding the sphere, light and camera data
+s_scene* h_scene; // host scene
+s_scene d_scene_allocationhelper; // used as a helper to hold d_scene's nested arrays
+s_scene* d_scene; // device (GPU) scene
 
-float3 moveLEFT = { 1, 0, 0 };
-float3 moveBACK = { 0, 0, 1 };
-bool cameraRotationMode = false;
+// Center of the scene (used for camera rotation)
+float3 center = { 0, 0, 0 };
+
+// Camera rotation variables
 int ox, oy;
 float angle_x = 0, angle_y = 0;
 float start_angle_x, start_angle_y;
-
-static int DisplaySize() {
-    return imageW * imageH;
-}
+float angle = 0;
 
 // Timer ID
 StopWatchInterface* hTimer = NULL;
@@ -84,7 +70,7 @@ float framesPerSecond;
 float copyToDeviceTime;
 float calculationTime;
 float copyToHostTime;
-float timeFor60frames;
+float timeFor15frames;
 int frameiterator = 0;
 
 #ifndef MAX
@@ -92,20 +78,34 @@ int frameiterator = 0;
 #endif
 #define BUFFER_DATA(i) ((char *)0 + i)
 
-void computeFPS() {
-    frameCount++;
-    fpsCount++;
-    if (fpsCount == fpsLimit) {
+static void computeFPS_CPU(float renderTime) {
+    if (frameiterator < 15) {
+        frameiterator++;
+        timeFor15frames += renderTime;
+    }
+    else {
         char fps[256];
-        float ifps = 1.f / (sdkGetAverageTimerValue(&hTimer) / 1000.f);
-        framesPerSecond = ifps;
         sprintf(fps, "<CUDA %s Set> %3.1f fps, %5.8f render time",
-            "Sphere Shading", ifps, deltaTime * 0.001f);
+            "Sphere Shading", 1.0f / timeFor15frames * 15.0f, timeFor15frames / 15.0f);
         glutSetWindowTitle(fps);
-        fpsCount = 0;
+        frameiterator = 0;
+        timeFor15frames = 0;
+    }
+}
 
-        fpsLimit = (int)MAX(1.f, (float)ifps);
-        sdkResetTimer(&hTimer);
+static void computeFPS_GPU(float copyToDeviceTime, float calculationTime, float copyToHostTime) {
+    if (frameiterator < 15) {
+        frameiterator++;
+        timeFor15frames += copyToDeviceTime + calculationTime + copyToHostTime;
+    }
+    else {
+        char fps[256];
+        sprintf(fps, "<CUDA %s Set> %3.1f fps, %5.8f render time, %1.4f, %1.4f, %1.4f",
+            "Sphere Shading", 1.0f / timeFor15frames * 15.0f, timeFor15frames / 15.0f,
+            copyToDeviceTime, calculationTime, copyToHostTime);
+        glutSetWindowTitle(fps);
+        frameiterator = 0;
+        timeFor15frames = 0;
     }
 }
 
@@ -157,7 +157,7 @@ void initOpenGLBuffers(int w, int h) {
     // allocate new buffers
     h_Src = (uchar4*)malloc(w * h * 4);
 
-    printf("Creating GL texture...\n");
+    //printf("Creating GL texture...\n");
     glEnable(GL_TEXTURE_2D);
     glGenTextures(1, &gl_Tex);
     glBindTexture(GL_TEXTURE_2D, gl_Tex);
@@ -167,9 +167,9 @@ void initOpenGLBuffers(int w, int h) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE,
         h_Src);
-    printf("Texture created.\n");
+    //printf("Texture created.\n");
 
-    printf("Creating PBO...\n");
+    //printf("Creating PBO...\n");
     glGenBuffers(1, &gl_PBO);
     glBindBuffer(GL_PIXEL_UNPACK_BUFFER_ARB, gl_PBO);
     glBufferData(GL_PIXEL_UNPACK_BUFFER_ARB, w * h * 4, h_Src, GL_STREAM_COPY);
@@ -182,10 +182,9 @@ void initOpenGLBuffers(int w, int h) {
     // DEPRECATED: checkCudaErrors( cudaGLRegisterBufferObject(gl_PBO) );
     checkCudaErrors(cudaGraphicsGLRegisterBuffer(
         &cuda_pbo_resource, gl_PBO, cudaGraphicsMapFlagsWriteDiscard));
-    printf("PBO created.\n");
+    //printf("PBO created.\n");
 
     checkCudaErrors(cudaMalloc(&d_dst, (w * h * 4) * sizeof(uchar4)));
-
     // load shader program
     gl_Shader = compileASMShader(GL_FRAGMENT_PROGRAM_ARB, shader_code);
 }
@@ -196,16 +195,18 @@ static void keyboard(unsigned char key, int /*x*/, int /*y*/) {
 
 	switch (key) {
 	case 'w':
-        cam->position += -deltaTime * cam->speed * moveBACK;
+        cam->position += deltaTime * cam->speed * (-cam->direction);
 		break;
 	case 's':
-        cam->position += deltaTime * cam->speed * moveBACK;
+        cam->position += deltaTime * cam->speed * cam->direction;
 		break;
 	case 'a':
-        cam->position += -deltaTime * cam->speed * moveLEFT;
+        cam->position += deltaTime * cam->speed * cam->left;
+        look_at(h_scene->camera, center);
 		break;
 	case 'd':
-        cam->position += deltaTime * cam->speed * moveLEFT;
+        cam->position += deltaTime * cam->speed * cam->right;
+        look_at(h_scene->camera, center);
 		break;
     case 'g':
         g_runcpu = true;
@@ -213,24 +214,23 @@ static void keyboard(unsigned char key, int /*x*/, int /*y*/) {
     case 'G':
         g_runcpu = false;
         break;
+    case '1':
+        Scene1(h_scene);
+        copyHostMemoryToDevice(d_scene, h_scene, &d_scene_allocationhelper, true);
+        break;
+    case '2':
+        SceneRandom(h_scene, SPHERE_COUNT, LIGHT_COUNT);
+        copyHostMemoryToDevice(d_scene, h_scene, &d_scene_allocationhelper, true);
+        break;
 	}
 
     glutPostRedisplay();
 }
 
+// Used to turn the camera
 void clickFunc(int button, int state, int x, int y) {
-    //if (button == GLUT_LEFT_BUTTON) {
-    //    if (state == GLUT_DOWN) {
-    //        cameraRotationMode = true;
-    //        printf("leftclick\n");
-    //    }
-    //    else {
-    //        cameraRotationMode = false;
-    //        printf("rightclick\n");
-    //    }
-    //}
 
-    if (state == GLUT_DOWN) {
+    if (button == GLUT_LEFT_BUTTON && state == GLUT_DOWN) {
         ox = x;
         oy = y;
         start_angle_x = angle_x;
@@ -240,51 +240,22 @@ void clickFunc(int button, int state, int x, int y) {
     glutPostRedisplay();
 }
 
+// Allows for small camera turning when dragging the mouse over the viewport
 void motionFunc(int x, int y) {
     
-    //angle_x = start_angle_x + ((float)(x - ox) / 300.0f);
-    //angle_y = start_angle_y + ((float)(y - oy) / 300.0f);
+    angle_x = start_angle_x + ((float)(x - ox) / 10.0f);
+    angle_y = start_angle_y + ((float)(y - oy) / 10.0f);
 
-    //float yaw = deltaTime * viewer.speed * angle_x;
-    //float pitch = deltaTime * viewer.speed * angle_y;
+    float yaw = -deltaTime * h_scene->camera.speed * angle_x;
+    float pitch = deltaTime * h_scene->camera.speed * angle_y;
 
-    ////if (pitch > 89.0f) {
-    ////    pitch = 89.0f;
-    ////}
-    ////else if (pitch < -89.0f) {
-    ////    pitch = -89.0f;
-    ////}
-
-    ////viewer.forward.
-
-    //vec3 forward = viewer.forward;
-
-    //vec3 newForward = vec3(
-    //    forward.x() - sin(yaw) * cos(pitch),
-    //    forward.x() - sin(pitch),
-    //    forward.x() - cos(yaw) * cos(pitch)
-    //);
-
-    //vec3 right = viewer.right;
-
-    //vec3 newRight = vec3(
-    //    right.x() - cos(yaw),
-    //    right.y(),
-    //    right.z() + sin(yaw)
-    //);
-
-    //viewer.setForward(unit_vector(newForward));
-    //viewer.setRight(unit_vector(newRight));
-    //viewer.setUp(unit_vector(cross(newForward, newRight)));
-
-    ////printf("new UP %3.1f, %3.1f, %3.1f\n", viewer.front.x(), viewer.front.y(), viewer.front.z());
-
-    //ox = x;
-    //oy = y;
+    look_at(h_scene->camera, make_float3(yaw, pitch, 0 ));
 
     glutPostRedisplay();
 }
 
+// Fix camera to the new aspect ratio
+// and set imageW and imageH to call the correct number of threads when rendering
 static void reshape(int w, int h) {
     glViewport(0, 0, w, h);
 
@@ -295,18 +266,25 @@ static void reshape(int w, int h) {
     glLoadIdentity();
     glOrtho(0.0, 1.0, 0.0, 1.0, 0.0, 1.0);
 
-    if (w != 0 && h != 0)  // Do not call when window is minimized that is when
+    if (w != 0 && h != 0) {
+        // Do not call when window is minimized that is when
                            // width && height == 0
         initOpenGLBuffers(w, h);
-
+    }
     imageW = w;
     imageH = h;
     set_resolution(h_scene->camera, imageH, imageW);
-    //look_at(h_scene->camera, make_float3(0, 0, -1));
+    look_at(h_scene->camera, make_float3(0, 0, 0));
+
+    frameiterator = 0;
+    timeFor15frames = 0;
+
+    printf("Viewport - width: %d, height: %d\n", imageW, imageH);
 
     glutPostRedisplay();
 }
 
+// Deallocating every resource used
 static void cleanup() {
     if (h_Src) {
         free(h_Src);
@@ -316,18 +294,17 @@ static void cleanup() {
     delete h_scene->spheres.center.x;
     delete h_scene->spheres.center.y;
     delete h_scene->spheres.center.z;
-    delete h_scene->spheres.center.angle;
     delete h_scene->spheres.colors.x;
     delete h_scene->spheres.colors.y;
     delete h_scene->spheres.colors.z;
     delete h_scene->spheres.ka;
     delete h_scene->spheres.kd;
     delete h_scene->spheres.ks;
+    delete h_scene->spheres.m;
     delete h_scene->spheres.radius;
     delete h_scene->lights.center.x;
     delete h_scene->lights.center.y;
     delete h_scene->lights.center.z;
-    delete h_scene->lights.center.angle;
     delete h_scene->lights.colors.x;
     delete h_scene->lights.colors.y;
     delete h_scene->lights.colors.z;
@@ -352,15 +329,14 @@ static void cleanup() {
     cudaFree(d_scene_allocationhelper.spheres.center.x);
     cudaFree(d_scene_allocationhelper.spheres.center.y);
     cudaFree(d_scene_allocationhelper.spheres.center.z);
-    cudaFree(d_scene_allocationhelper.spheres.center.angle);
     cudaFree(d_scene_allocationhelper.spheres.colors.x);
     cudaFree(d_scene_allocationhelper.spheres.colors.y);
     cudaFree(d_scene_allocationhelper.spheres.colors.z);
     cudaFree(d_scene_allocationhelper.spheres.ka);
     cudaFree(d_scene_allocationhelper.spheres.kd);
     cudaFree(d_scene_allocationhelper.spheres.ks);
+    cudaFree(d_scene_allocationhelper.spheres.m);
     cudaFree(d_scene_allocationhelper.spheres.radius);
-    cudaFree(d_scene_allocationhelper.lights.center.angle);
     cudaFree(d_scene_allocationhelper.lights.center.x);
     cudaFree(d_scene_allocationhelper.lights.center.y);
     cudaFree(d_scene_allocationhelper.lights.center.z);
@@ -370,77 +346,9 @@ static void cleanup() {
     cudaFree(d_scene);
 }
 
-static void copyHostToDevice_positions(s_positions& dst, s_positions& src, int count) {
-    checkCudaErrors(cudaMemcpy(dst.x, src.x, sizeof(float) * count, cudaMemcpyHostToDevice));
-    checkCudaErrors(cudaMemcpy(dst.y, src.y, sizeof(float) * count, cudaMemcpyHostToDevice));
-    checkCudaErrors(cudaMemcpy(dst.z, src.z, sizeof(float) * count, cudaMemcpyHostToDevice));
-    checkCudaErrors(cudaMemcpy(dst.angle, src.angle, sizeof(float) * count, cudaMemcpyHostToDevice));
-}
-static void copyHostToDevice_colors(s_colors& dst, s_colors& src, int count) {
-    checkCudaErrors(cudaMemcpy(dst.x, src.x, sizeof(float) * count, cudaMemcpyHostToDevice));
-    checkCudaErrors(cudaMemcpy(dst.y, src.y, sizeof(float) * count, cudaMemcpyHostToDevice));
-    checkCudaErrors(cudaMemcpy(dst.z, src.z, sizeof(float) * count, cudaMemcpyHostToDevice));
-}
-static void copyHostToDevice_spheres(s_spheres& dst, s_spheres& src) {
-    int count = src.count;
-    copyHostToDevice_positions(dst.center, src.center, count);
-    checkCudaErrors(cudaMemcpy(dst.radius, src.radius, sizeof(float) * count, cudaMemcpyHostToDevice));
-    checkCudaErrors(cudaMemcpy(dst.ka, src.ka, sizeof(float) * count, cudaMemcpyHostToDevice));
-    checkCudaErrors(cudaMemcpy(dst.kd, src.kd, sizeof(float) * count, cudaMemcpyHostToDevice));
-    checkCudaErrors(cudaMemcpy(dst.ks, src.ks, sizeof(float) * count, cudaMemcpyHostToDevice));
-    copyHostToDevice_colors(dst.colors, src.colors, count);
-}
-static void copyHostToDevice_lights(s_lights& dst, s_lights& src) {
-    int count = src.count;
-    copyHostToDevice_positions(dst.center, src.center, count);
-    copyHostToDevice_colors(dst.colors, src.colors, count);
-}
-static void copyHostToDevice_float(float& dst, float& src) {
-    checkCudaErrors(cudaMemcpy(&dst, &src, sizeof(float), cudaMemcpyHostToDevice));
-}
-static void copyHostToDevice_float3(float3& dst, float3& src) {
-    checkCudaErrors(cudaMemcpy(&dst.x, &src.x, sizeof(float), cudaMemcpyHostToDevice));
-    checkCudaErrors(cudaMemcpy(&dst.y, &src.y, sizeof(float), cudaMemcpyHostToDevice));
-    checkCudaErrors(cudaMemcpy(&dst.z, &src.z, sizeof(float), cudaMemcpyHostToDevice));
-}
-
-static void copyHostMemoryToDevice(bool copySceneElements) {
-    checkCudaErrors(cudaMemcpy(d_scene, h_scene, sizeof(s_scene), cudaMemcpyHostToDevice));
-    if (copySceneElements == true) {
-        copyHostToDevice_spheres(d_scene_allocationhelper.spheres, h_scene->spheres);
-        copyHostToDevice_lights(d_scene_allocationhelper.lights, h_scene->lights);
-    }
-
-    checkCudaErrors(cudaMemcpy(&d_scene->spheres.center.x, &d_scene_allocationhelper.spheres.center.x, sizeof(float*), cudaMemcpyHostToDevice));
-    checkCudaErrors(cudaMemcpy(&d_scene->spheres.center.y, &d_scene_allocationhelper.spheres.center.y, sizeof(float*), cudaMemcpyHostToDevice));
-    checkCudaErrors(cudaMemcpy(&d_scene->spheres.center.z, &d_scene_allocationhelper.spheres.center.z, sizeof(float*), cudaMemcpyHostToDevice));
-    checkCudaErrors(cudaMemcpy(&d_scene->spheres.center.angle, &d_scene_allocationhelper.spheres.center.angle, sizeof(float*), cudaMemcpyHostToDevice));
-	checkCudaErrors(cudaMemcpy(&d_scene->spheres.radius, &d_scene_allocationhelper.spheres.radius, sizeof(float*), cudaMemcpyHostToDevice));
-	checkCudaErrors(cudaMemcpy(&d_scene->spheres.ka, &d_scene_allocationhelper.spheres.ka, sizeof(float*), cudaMemcpyHostToDevice));
-	checkCudaErrors(cudaMemcpy(&d_scene->spheres.kd, &d_scene_allocationhelper.spheres.kd, sizeof(float*), cudaMemcpyHostToDevice));
-	checkCudaErrors(cudaMemcpy(&d_scene->spheres.ks, &d_scene_allocationhelper.spheres.ks, sizeof(float*), cudaMemcpyHostToDevice));
-	checkCudaErrors(cudaMemcpy(&d_scene->spheres.colors.x, &d_scene_allocationhelper.spheres.colors.x, sizeof(float*), cudaMemcpyHostToDevice));
-	checkCudaErrors(cudaMemcpy(&d_scene->spheres.colors.y, &d_scene_allocationhelper.spheres.colors.y, sizeof(float*), cudaMemcpyHostToDevice));
-	checkCudaErrors(cudaMemcpy(&d_scene->spheres.colors.z, &d_scene_allocationhelper.spheres.colors.z, sizeof(float*), cudaMemcpyHostToDevice));
-
-    checkCudaErrors(cudaMemcpy(&d_scene->lights.center.x, &d_scene_allocationhelper.lights.center.x, sizeof(float*), cudaMemcpyHostToDevice));
-    checkCudaErrors(cudaMemcpy(&d_scene->lights.center.y, &d_scene_allocationhelper.lights.center.y, sizeof(float*), cudaMemcpyHostToDevice));
-    checkCudaErrors(cudaMemcpy(&d_scene->lights.center.z, &d_scene_allocationhelper.lights.center.z, sizeof(float*), cudaMemcpyHostToDevice));
-    checkCudaErrors(cudaMemcpy(&d_scene->lights.center.angle, &d_scene_allocationhelper.lights.center.angle, sizeof(float*), cudaMemcpyHostToDevice));
-    checkCudaErrors(cudaMemcpy(&d_scene->lights.colors.x, &d_scene_allocationhelper.lights.colors.x, sizeof(float*), cudaMemcpyHostToDevice));
-    checkCudaErrors(cudaMemcpy(&d_scene->lights.colors.y, &d_scene_allocationhelper.lights.colors.y, sizeof(float*), cudaMemcpyHostToDevice));
-    checkCudaErrors(cudaMemcpy(&d_scene->lights.colors.z, &d_scene_allocationhelper.lights.colors.z, sizeof(float*), cudaMemcpyHostToDevice));
-}
-
-static void copyDeviceToHost() {
-    checkCudaErrors(cudaMemcpy(h_Src, d_dst, sizeof(uchar4) * imageH * imageW, cudaMemcpyDeviceToHost));
-}
-
+// Function for rendering one frame
 void renderImage(bool runcpu) {
-    if (runcpu) {
-        //int startPass = pass;
-        float xs, ys;
-        xs = ys = 0;
+    if (runcpu == true) {
 		sdkResetTimer(&hTimer);
 
 		checkCudaErrors(cudaGraphicsMapResources(1, &cuda_pbo_resource, 0));
@@ -448,22 +356,16 @@ void renderImage(bool runcpu) {
 		checkCudaErrors(cudaGraphicsResourceGetMappedPointer(
 			(void**)&d_dst, &num_bytes, cuda_pbo_resource));
 
-		// Get the pixel scale and offset
-		double s = scale / (double)imageW;
-		double x = (xs - (double)imageW * 0.5f) * s + xOff;
-		double y = (ys - (double)imageH * 0.5f) * s + yOff;
-
-        // Run the mandelbrot generator
+        // Function for generating the rendered bitmap
         renderImageCPU(h_Src, imageW, imageH, *h_scene);
-        
-        // Use the adaptive sampling version when animating.
 
+        // Copying the bitmap to GPU for display
         checkCudaErrors(cudaMemcpy(d_dst, h_Src, imageW * imageH * sizeof(uchar4),
             cudaMemcpyHostToDevice));
 
         checkCudaErrors(cudaGraphicsUnmapResources(1, &cuda_pbo_resource, 0));
 
-        printf("CPU = %5.8f\n", 0.001f * sdkGetTimerValue(&hTimer));
+        computeFPS_CPU(0.001f * sdkGetTimerValue(&hTimer));
     }
     else {
         
@@ -472,7 +374,7 @@ void renderImage(bool runcpu) {
         dim3 blocks(imageW / tx + 1, imageH / ty + 1);
         dim3 threads(tx, ty);
 
-        copyHostMemoryToDevice(false);
+        copyHostMemoryToDevice(d_scene, h_scene, &d_scene_allocationhelper, false);
 
         copyToDeviceTime = 0.001f * sdkGetTimerValue(&hTimer);
         sdkResetTimer(&hTimer);
@@ -484,48 +386,16 @@ void renderImage(bool runcpu) {
         calculationTime = 0.001f * sdkGetTimerValue(&hTimer);
         sdkResetTimer(&hTimer);
 
-        copyDeviceToHost();
-
         copyToHostTime = 0.001f * sdkGetTimerValue(&hTimer);
-        //sdkResetTimer(&hTimer);
-
-        float xs, ys;
-        xs = ys = 0;
 
         checkCudaErrors(cudaGraphicsMapResources(1, &cuda_pbo_resource, 0));
         size_t num_bytes;
         checkCudaErrors(cudaGraphicsResourceGetMappedPointer(
             (void**)&d_dst, &num_bytes, cuda_pbo_resource));
 
-        // Get the pixel scale and offset
-        double s = scale / (double)imageW;
-        double x = (xs - (double)imageW * 0.5f) * s + xOff;
-        double y = (ys - (double)imageH * 0.5f) * s + yOff;
-
-        // Run the mandelbrot generator
-        //renderImageGPU(d_dst, imageW, imageH, d_scene);
-
-        // Use the adaptive sampling version when animating.
-
-        //checkCudaErrors(cudaMemcpy(d_dst, h_Src, imageW * imageH * sizeof(uchar4),
-        //    cudaMemcpyHostToDevice));
-
         checkCudaErrors(cudaGraphicsUnmapResources(1, &cuda_pbo_resource, 0));
 
-        if (frameiterator < 15) {
-            frameiterator++;
-            timeFor60frames += copyToDeviceTime + calculationTime + copyToHostTime;
-        }
-        else {
-            char fps[256];
-            sprintf(fps, "<CUDA %s Set> %3.1f fps, %5.8f render time",
-                "Sphere Shading", 1.0f / timeFor60frames * 15.0f, timeFor60frames / 15.0f);
-            glutSetWindowTitle(fps);
-            frameiterator = 0;
-            timeFor60frames = 0;
-        }
-
-        //printf("GPU = %1.5f, %1.5f, %1.5f\n", copyToDeviceTime, calculationTime, copyToHostTime);
+        computeFPS_GPU(copyToDeviceTime, calculationTime, copyToHostTime);
     }
 }
 
@@ -533,7 +403,7 @@ static void display(void)
 {
     sdkStartTimer(&hTimer);
 
-    // render the Mandelbrot image
+    // render the Scene
     renderImage(g_runcpu);
 
     // load texture from PBO
@@ -568,14 +438,6 @@ static void display(void)
     lastFrameTime = currentFrameTime;
     currentFrameTime = sdkGetTimerValue(&globalTimer);
     deltaTime = currentFrameTime - lastFrameTime;
-
-    //printf("Width: % d, Height: %d, FPS: %3.1f\n", imageW, imageH, framesPerSecond);
-    //printf("pos: %3.1f, %3.1f, %3.1f, right: %3.1f, %3.1f, %3.1f, up: %3.1f, %3.1f, %3.1f \n", 
-    //    viewer.getPos().x(), viewer.getPos().y(), viewer.getPos().z(),
-    //    viewer.right.x(), viewer.right.y(), viewer.right.z(),
-    //    viewer.up.x(), viewer.up.y(), viewer.up.z());
-
-    computeFPS();
 }
 
 void timerEvent(int value) {
@@ -608,7 +470,6 @@ void initGL(int* argc, char** argv) {
     glutReshapeFunc(reshape);
     glutCloseFunc(cleanup);
     glutTimerFunc(REFRESH_DELAY, timerEvent, 0);
-    //initMenus();
 
     if (!isGLVersionSupported(1, 5) ||
         !areGLExtensionsSupported(
@@ -635,19 +496,6 @@ void initData(int argc, char** argv) {
 
     numSMs = deviceProp.multiProcessorCount;
 
-    // initialize some of the arguments
-    if (checkCmdLineFlag(argc, (const char**)argv, "xOff")) {
-        xOff = getCmdLineArgumentFloat(argc, (const char**)argv, "xOff");
-    }
-
-    if (checkCmdLineFlag(argc, (const char**)argv, "yOff")) {
-        yOff = getCmdLineArgumentFloat(argc, (const char**)argv, "yOff");
-    }
-
-    if (checkCmdLineFlag(argc, (const char**)argv, "scale")) {
-        scale = getCmdLineArgumentFloat(argc, (const char**)argv, "xOff");
-    }
-
     printf("Data initialization done.\n");
 }
 
@@ -656,13 +504,11 @@ void initPositions(s_positions& positions, int count) {
     positions.x = new float[count];
     positions.y = new float[count];
     positions.z = new float[count];
-    positions.angle = new float[count];
 }
 void initPositionsCUDA(s_positions& positions, int count) {
     checkCudaErrors(cudaMalloc((void**)&positions.x, count * sizeof(float)));
     checkCudaErrors(cudaMalloc((void**)&positions.y, count * sizeof(float)));
     checkCudaErrors(cudaMalloc((void**)&positions.z, count * sizeof(float)));
-    checkCudaErrors(cudaMalloc((void**)&positions.angle, count * sizeof(float)));
 }
 void initColors(s_colors& colors, int count) {
     colors.count = count;
@@ -686,6 +532,7 @@ void initSpheres(s_scene& scene, int sphere_count, bool useCuda) {
         checkCudaErrors(cudaMalloc((void**)&scene.spheres.ka, sizeof(float) * sphere_count));
         checkCudaErrors(cudaMalloc((void**)&scene.spheres.kd, sizeof(float) * sphere_count));
         checkCudaErrors(cudaMalloc((void**)&scene.spheres.ks, sizeof(float) * sphere_count));
+        checkCudaErrors(cudaMalloc((void**)&scene.spheres.m, sizeof(int) * sphere_count));
     }
 	else {
         scene.spheres.count = sphere_count;
@@ -696,6 +543,7 @@ void initSpheres(s_scene& scene, int sphere_count, bool useCuda) {
         scene.spheres.ka = new float[sphere_count];
         scene.spheres.kd = new float[sphere_count];
         scene.spheres.ks = new float[sphere_count];
+        scene.spheres.m = new int[sphere_count];
 	}
 }
 void initLights(s_scene& scene, int light_count, bool useCuda) {
@@ -726,7 +574,7 @@ void initCamera(s_camera& camera, bool useCuda) {
 void initScene() {
     h_scene = new s_scene;
     checkCudaErrors(cudaMalloc((void**)&d_scene, sizeof(s_scene)));
-    // NIE DZIAŁA, PONIEWAŻ PRÓBUJESZ PRZYPISYWAĆ COŚ DO DANYCH ZAALOKOWANYCH NA GPU
+
     initSpheres(*h_scene, SPHERE_COUNT, false);
     initLights(*h_scene, LIGHT_COUNT, false);
 
@@ -741,7 +589,7 @@ void initScene() {
 
     SceneRandom(h_scene, SPHERE_COUNT, LIGHT_COUNT);
 
-    copyHostMemoryToDevice(true);
+    copyHostMemoryToDevice(d_scene, h_scene, &d_scene_allocationhelper, true);
 
     printf("Scene initialized\n");
 }
@@ -759,6 +607,16 @@ int main(int argc, char* argv[])
 
     sdkCreateTimer(&globalTimer);
     sdkStartTimer(&globalTimer);
+
+    printf("Sphere Rendering App:\n");
+    printf("'A' and 'D' - rotate the camera around the center of the sphere cluster\n");
+    printf("'W' and 'S' - bring the camera closer or futher from the center\n");
+    printf("Use mouse dragging to slightly adjust camera view perspective (experimental)\n");
+    printf("'G' - render scene using the GPU (default mode)\n");
+    printf("'g' - render scene using the CPU (recommended to decrease window size before switching\n");
+    printf("'1' - change scene to one sphere lit up by 3 lights with random colors\n");
+    printf("'2' - change scene to 1000 spheres lit up by 10 lights (default)\n");
+    printf("(repeated clicking reloads the scenes, changing the lighting)\n");
 
     glutMainLoop();
 

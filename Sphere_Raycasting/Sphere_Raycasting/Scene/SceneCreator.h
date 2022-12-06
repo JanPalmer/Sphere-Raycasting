@@ -1,17 +1,12 @@
 #pragma once
 #include "scene.cuh"
 
-static void Scene1(s_scene* scene) {
-    setSphere(scene->spheres, 0, make_float3(0, 0, -1), 0.5f, make_float3(1, 1, 1));
-    setSphere(scene->spheres, 1, make_float3(0, -100.5, -1), 100, make_float3(1, 1, 1));
-
-    setLight(scene->lights, 0, make_float3(0, 10, 0), make_float3(2.0f, 1.2f, 0.0f));
-    setLight(scene->lights, 1, make_float3(0, 0, -1), make_float3(0.0f, 1.0f, 0.0f));
-    setLight(scene->lights, 2, make_float3(0, 1, 0), make_float3(0.0f, 0.0f, 2.0f));
+static float getRandomint(int start, int end) {
+    return start + rand() / (RAND_MAX / (end - start));
 }
 
 static float getRandomfloat(float start, float end) {
-    return start + static_cast <float> (rand()) / (static_cast <float> (RAND_MAX / (end - start)));
+    return start + static_cast <float> (rand()) / (static_cast <float> ((float)RAND_MAX / (end - start)));
 }
 
 static float3 getRandomfloat3(float start, float end) {
@@ -21,6 +16,38 @@ static float3 getRandomfloat3(float start, float end) {
     return make_float3(r1, r2, r3);
 }
 
+static void Scene1(s_scene* scene) {
+    scene->camera.position.x = 2500.0f;
+    scene->camera.position.y = 2500.0f;
+    scene->camera.position.z = 350.0f;
+    look_at(scene->camera, make_float3(2500, 2500, 0));
+
+    setSphere(scene->spheres, 1, make_float3(2500, 2500, 0), 100, make_float3(1, 1, 1));
+
+    for (int i = 0; i < 3; i++) {
+        setLight(
+            scene->lights,
+            i,
+            getRandomfloat3(2000, 3000),
+            getRandomfloat3(0, 1.0f)
+        );
+    }
+
+    setLight(scene->lights, 0, make_float3(2000, 2000, -150), getRandomfloat3(0, 1.0f));
+    setLight(scene->lights, 1, make_float3(3000, 2000, 300), getRandomfloat3(0, 1.0f));
+    setLight(scene->lights, 2, make_float3(2000, 3000, 0), getRandomfloat3(0, 1.0f));
+
+    for (int i = 3; i < 10; i++) {
+        setLight(
+            scene->lights,
+            i,
+            make_float3(0, 0, 0),
+            make_float3(0, 0, 0)
+        );
+    }
+}
+
+// Generates a scene with random sphere placement
 static void SceneRandom(s_scene* scene, int sphere_count, int light_count) {
     scene->camera.position.x = 0.0f;
     scene->camera.position.y = 0.0f;
@@ -41,7 +68,8 @@ static void SceneRandom(s_scene* scene, int sphere_count, int light_count) {
             getRandomfloat3(0, 1),
             getRandomfloat(0, 0.1f),
             getRandomfloat(0, 1),
-            getRandomfloat(0, 1)
+            getRandomfloat(0, 1),
+            getRandomint(32, 128)
             );
     }
 
