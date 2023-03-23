@@ -27,5 +27,6 @@ The project utilizes C++, the Nvidia CUDA toolkit 11.7, freeglut 3.4 and glew32.
 The project has been made using Visual Studio 2019.\
 To run the project, you'll need to place the following .dll files together with the compiled .exe file:
 - freeglutd.dll
-- glew32.dll \
+- glew32.dll
+
 You can find them in Dependencies/GL.
